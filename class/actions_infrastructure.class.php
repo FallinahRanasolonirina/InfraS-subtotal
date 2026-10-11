@@ -621,12 +621,8 @@
 			$sql		.= " WHERE ".$object->db->sanitize($object->fk_element)." = ".((int) $object->id);
 			$sql		.= " AND special_code = 3";
 			$rescheck	= $object->db->query($sql);
-			if (!$rescheck) {
-				dol_syslog(__METHOD__.' '.$object->db->lasterror(), LOG_ERR);
-				return -1;	// Erreur SQL remontée à update_price() (retour -1) au lieu d'un recalcul silencieux options comprises
-			}
-			if ($object->db->num_rows($rescheck) == 0) {
-				$object->db->free($rescheck);
+			if (!$rescheck || $object->db->num_rows($rescheck) == 0) {
+				if ($rescheck) $object->db->free($rescheck);
 				return 0; // Pas de lignes OL : laisser update_price() gérer normalement
 			}
 			$object->db->free($rescheck);
@@ -648,10 +644,7 @@
 			$sql	.= " WHERE ".$object->db->sanitize($object->fk_element)." = ".((int) $object->id);
 			$sql	.= " AND special_code != 3";
 			$resql	= $object->db->query($sql);
-			if (!$resql) {
-				dol_syslog(__METHOD__.' '.$object->db->lasterror(), LOG_ERR);
-				return -1;	// Erreur SQL remontée à update_price()
-			}
+			if (!$resql) return 0;
 			$obj = $object->db->fetch_object($resql);
 			$object->db->free($resql);
 			if (!$obj) return 0;
@@ -686,10 +679,7 @@
 			$sql	.= ", multicurrency_total_ttc = ".((float) price2num($object->multicurrency_total_ttc, 8, 1));
 			$sql	.= " WHERE rowid = ".((int) $object->id);
 			$resql	= $object->db->query($sql);
-			if (!$resql) {
-				dol_syslog(__METHOD__.' '.$object->db->lasterror(), LOG_ERR);
-				return -1;	// Erreur SQL remontée à update_price()
-			}
+			if (!$resql) return 0;
 
 			return 1; // update_price() standard ignorée
 		}
@@ -993,8 +983,6 @@
 			$titleTextX			= !empty($posx) ? $posx : $titleBlockX;
 			$titleTextW			= $titleBlockX + $titleBlockW - $titleTextX;
 			// Manage background color
-			// Couleur du texte du titre : noir par défaut, puis blanc automatique sur fond sombre (infrastructure_getPdfBackgroundStyle), puis couleur INFRASTRUCTURE_PDF_TITLE_COLOR si renseignée. La remise au noir doit précéder ces deux étapes : placée après (jusqu'en 21.8.12), elle annulait la couleur configurée et le blanc automatique.
-			$pdf->SetTextColor(0, 0, 0);
 			$fillDescBloc				= false;
 			$bgStyle					= infrastructure_getPdfBackgroundStyle($pdf, 'INFRASTRUCTURE_PDF_TITLE_BACKGROUND_COLOR', 'INFRASTRUCTURE_PDF_TITLE_BACKGROUND_CELL_HEIGHT_OFFSET', 'INFRASTRUCTURE_PDF_TITLE_BACKGROUND_CELL_POS_Y_OFFSET', $line);
 			$fillBackground				= $bgStyle['fill'];
@@ -1003,6 +991,7 @@
 			$backgroundCellPosYOffset	= $bgStyle['posYOffset'];
 			// User-configured text color override (takes precedence over auto white-on-dark from infrastructure_getPdfBackgroundStyle).
 			infrastructure_setPdfTextColor($pdf, 'INFRASTRUCTURE_PDF_TITLE_COLOR');
+			$pdf->SetTextColor(0, 0, 0);
 			// Réservation d'espace : pour tout titre infrastructure (avec ou sans totaux stockés via INFRASTRUCTURE_PDF_TITLE_WITH_TOTAL), si le couple « libellé du titre + description optionnelle + (ligne de totaux si applicable) » ne tient pas sur la page courante, on force un AddPage propre AVANT le rendu. Sans cette précaution, le writeHTMLCell du libellé déclenche un auto-page-break TCPDF en plein milieu du titre — le label se retrouve à cheval ou perdu entre les deux pages, une page parasite vide est créée, et le MultiCell du bandeau de fond (appelé après le writeHTMLCell, avec SetXY à $posy + offset) est dessiné sur la page d'arrivée à la position Y de l'ancienne page : on observe alors un bandeau vide sans texte en haut de la page suivante. Pour le mode INFRASTRUCTURE_PDF_TITLE_WITH_TOTAL actif, on ajoute en plus la hauteur de la ligne de totaux redessinée par infrastructure_drawTitleColumnsAtPosY.
 			// Compat. modèles natifs Dolibarr (pdf_crabe, pdf_azur, etc.) : ces modèles entourent l'appel à pdf_writelinedesc d'un startTransaction / rollbackTransaction(true) et, en cas de saut de page détecté au 1er essai, ils réduisent temporairement la marge basse via setPageOrientation('', true, $heightforfooter) (~12 mm au lieu des 80-120 mm initiaux pour la zone footer + totaux + freetext + QR) avant un 2e appel. Conséquence : notre AddPage du 1er essai est annulé par le rollback, et au 2e essai notre check $posy + $reservedH > getPageHeight() - getBreakMargin() ne se déclencherait plus (marge basse trop courte) — le titre serait rendu en débordement en bas de page courante puis les lignes suivantes se dessineraient par-dessus le footer. On applique donc un plancher conservatif de 25 mm à la marge basse pour le calcul du pagebreakTrigger, ce qui garantit que notre AddPage explicite se redéclenche correctement au 2e essai hors transaction. De plus, on désactive l'auto-page-break TCPDF pendant le rendu du couple writeHTMLCell + MultiCell pour le rendre atomique (sinon l'auto-page-break interne pourrait toujours fragmenter le titre dans des cas non couverts par notre estimation de hauteur).
 			$reservedSizeTitle		= (float) (getDolGlobalString('INFRASTRUCTURE_PDF_TITLE_SIZE') ? getDolGlobalString('INFRASTRUCTURE_PDF_TITLE_SIZE') : 9);
@@ -1081,8 +1070,6 @@
 					infrastructure_drawTitleColumnsAtPosY($pdf, $pdfModel, $object, $line, $infrastructure_last_title_posy);
 				}
 			}
-			// Retour au noir : sans fond ni description, la couleur du titre resterait active pour les lignes suivantes.
-			$pdf->setColor('text', 0, 0, 0);
 			// Restauration de l'auto-page-break TCPDF avec sa marge basse d'origine (cf. désactivation en début de méthode pour rendu atomique).
 			$pdf->SetAutoPageBreak($savedAutoPageBreak, $savedBreakMargin);
 		}
@@ -1095,7 +1082,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_writelinedesc_ref($parameters, &$object, &$action = '')
+		public function pdf_writelinedesc_ref($parameters = [], &$object, &$action = '')
 		{
 			return $this->pdf_writelinedesc($parameters, $object, $action);
 		}
@@ -1158,7 +1145,7 @@
 		* @param	string			$action 	Action
 		* @return	void
 		*/
-		public function beforePercentCalculation($parameters, &$object, &$action = '')
+		public function beforePercentCalculation($parameters = [], &$object, &$action = '')
 		{
 			if ($object->name == 'sponge' && isset($parameters['object']) && !empty($parameters['object']->lines)) {
 				foreach ($parameters['object']->lines as $k => $line) {
@@ -1177,7 +1164,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlineqty($parameters, &$object, &$action = '')
+		public function pdf_getlineqty($parameters = [], &$object, &$action = '')
 		{
 			global $hideqtys, $hideprices, $hookmanager, $pdf;
 
@@ -1266,7 +1253,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlinetotalexcltax($parameters, &$object, &$action = '')
+		public function pdf_getlinetotalexcltax($parameters = [], &$object, &$action = '')
 		{
 			global $conf, $hideprices, $hideqtys, $hookmanager, $hidedetails, $langs, $pdf;
 
@@ -1386,7 +1373,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlinetotalwithtax($parameters, &$object, &$action = '')
+		public function pdf_getlinetotalwithtax($parameters = [], &$object, &$action = '')
 		{
 			global $conf, $langs, $pdf;
 
@@ -1453,7 +1440,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlineunit($parameters, &$object, &$action = '')
+		public function pdf_getlineunit($parameters = [], &$object, &$action = '')
 		{
 			global $conf, $pdf;
 
@@ -1481,7 +1468,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlineupexcltax($parameters, &$object, &$action = '')
+		public function pdf_getlineupexcltax($parameters = [], &$object, &$action = '')
 		{
 			global $conf, $pdf, $hideprices, $hidedetails, $hookmanager, $langs;
 
@@ -1534,7 +1521,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlineremisepercent($parameters, &$object, &$action = '')
+		public function pdf_getlineremisepercent($parameters = [], &$object, &$action = '')
 		{
 			global $conf, $hideqtys, $hideprices, $hidedetails, $hookmanager, $langs, $pdf;
 
@@ -1582,7 +1569,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlineupwithtax($parameters, &$object, &$action = '')
+		public function pdf_getlineupwithtax($parameters = [], &$object, &$action = '')
 		{
 			global $conf, $hideqtys, $hideprices, $pdf;
 
@@ -1621,7 +1608,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlinevatrate($parameters, &$object, &$action = '')
+		public function pdf_getlinevatrate($parameters = [], &$object, &$action = '')
 		{
 			global $hideqtys, $hideprices, $hidedetails, $hookmanager, $pdf;
 
@@ -1706,7 +1693,7 @@
 		* @param	string			$action 	Action
 		* @return	int
 		*/
-		public function pdf_getlineprogress($parameters, &$object, &$action)
+		public function pdf_getlineprogress($parameters = [], &$object, &$action)
 		{
 			$i		= intval($parameters['i']);
 			$line	= isset($object->lines[$i]) ? $object->lines[$i] : null;
@@ -1731,7 +1718,7 @@
 		* @param	string			$action		Action
 		* @return	int							> 0 if OK, 0 if no hook executed, < 0 if KO
 		*/
-		public function beforePDFCreation($parameters, &$object, &$action = '')
+		public function beforePDFCreation($parameters = [], &$object, &$action = '')
 		{
 			/**
 			 * @var $pdf    TCPDF
@@ -1871,7 +1858,7 @@
 		* @param	string			$action		Action
 		* @return	int
 		*/
-		public function pdf_writelinedesc($parameters, &$object, &$action = '')
+		public function pdf_writelinedesc($parameters = [], &$object, &$action = '')
 		{
 			/**
 			 * @var $pdf    TCPDF
@@ -2332,15 +2319,15 @@
 					$titleStyleUnderline	=  strpos(getDolGlobalString('INFRASTRUCTURE_TITLE_STYLE'), 'U') === false ? '' : ' text-decoration: underline;';
 					if (empty($line->label)) {
 						if ($line->qty >= 91 && $line->qty <= 99 && getDolGlobalInt('INFRASTRUCTURE_CONCAT_TITLE_LABEL_IN_TOTAL_LABEL')) {
-							$object->tpl["sublabel"].=  dolPrintHTML($line->description).' '.dol_escape_htmltag(infrastructure_getTitle($object, $line));
+							$object->tpl["sublabel"].=  $line->description.' '.infrastructure_getTitle($object, $line);
 						} else {
-							$object->tpl["sublabel"]	= ($object->tpl["sublabel"] ?? '').dolPrintHTML($line->description);
+							$object->tpl["sublabel"]	= ($object->tpl["sublabel"] ?? '').$line->description;
 						}
 					} else {
 						if (getDolGlobalString('PRODUIT_DESC_IN_FORM') && !empty($line->description)) {
-							$object->tpl["sublabel"]	.= '<span class="infrastructure_label" style="'.$titleStyleItalic.$titleStyleBold.$titleStyleUnderline.'" >'.dol_escape_htmltag($line->label).'</span><br><div class="infrastructure_desc">'.dolPrintHTML($line->description).'</div>';
+							$object->tpl["sublabel"]	.= '<span class="infrastructure_label" style="'.$titleStyleItalic.$titleStyleBold.$titleStyleUnderline.'" >'.$line->label.'</span><br><div class="infrastructure_desc">'.dol_htmlentitiesbr($line->description).'</div>';
 						} else {
-							$object->tpl["sublabel"]	.= '<span class="infrastructure_label classfortooltip" style="'.$titleStyleItalic.$titleStyleBold.$titleStyleUnderline.'" title="'.dol_escape_htmltag($line->description).'">'.dol_escape_htmltag($line->label).'</span>';
+							$object->tpl["sublabel"]	.= '<span class="infrastructure_label classfortooltip" style="'.$titleStyleItalic.$titleStyleBold.$titleStyleUnderline.'" title="'.$line->description.'">'.$line->label.'</span>';
 						}
 					}
 					if ($line->qty>90) {
